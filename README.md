@@ -5,6 +5,14 @@ This is an example of OpenID Connect 1.0 server in [FastAPI](https://fastapi.tia
 - FastAPI Repo: <https://github.com/tiangolo/fastapi>
 - Authlib Repo: <https://github.com/lepture/authlib>
 
+# Auth Code Flow
+The flow includes the following steps:
+The client prepares a link to the authorization server and opens the link for user in an user agent (browser). The link includes information that allows the authorization server to identify and respond to the client.
+User enters their credentials on the new page.
+Credentials are sent to authorization server via the user agent (browser).
+The authorization server validates the credentials and redirects user back to the client with an authorization code.
+The client talks with the authorization server, confirms its identify and exchanges the authorization code for an access token and optionally a refresh token.
+The client uses the access token to access resources on the resource server.
 ---
 
 ## Take a quick look
@@ -40,8 +48,26 @@ Before testing, we need to create a client:
 Let's take `authorization_code` grant type as an example. Visit:
 
 ```bash
+$ curl -i -XPOST 'http://127.0.0.1:5000/oauth/authorize?client_id=D3JlWRV57SjsiFR52stiEBrM&response_type=code&scope=openid+profile&nonce=abc' -F uuid=XXXXXXX
+
 $ curl -i -XPOST http://127.0.0.1:5000/oauth/authorize?client_id=${CLIENT_ID}&response_type=code&scope=openid+profile&nonce=abc -F uuid=XXXXXXX
 ```
+
+If you get the error below:
+```{
+  "error": "invalid_request",
+  "error_description": "Redirect URI http://www.example.com is not supported by client.",
+  "state": "324234234"
+}
+```
+It means that the entry in the DB for endpoint mismatch the redirect URL provided in the request
+They should match.
+
+Here is an example of a valid redirect URL
+```
+    http://localhost:5000/oidc/auth/cb/
+```
+
 
 After that, you will be redirect to a URL. For instance:
 

@@ -1,15 +1,18 @@
 '''OIDC server example'''
-
+import datetime
 import time
 from sqlalchemy import Column, ForeignKey, Integer, String
 from sqlalchemy.orm import relationship
+from sqlalchemy.dialects.sqlite import JSON, BOOLEAN, DATETIME
 from authlib.integrations.sqla_oauth2 import (
     OAuth2ClientMixin,
     OAuth2TokenMixin,
     OAuth2AuthorizationCodeMixin
 )
-from src.database import Base
+from src.database import Base, db
 
+
+import uuid
 
 class User(Base):  # pylint: disable=R0903
     '''User class example'''
@@ -60,3 +63,98 @@ class OAuth2Token(Base, OAuth2TokenMixin):
             return False
         expires_at = self.issued_at + self.expires_in * 2
         return expires_at >= time.time()
+
+def disambiguate_referent(referent: str) -> str:
+    ref_idx = 1
+    ref_split = referent.split("~")
+    if len(ref_split) > 1:
+        old_idx = int(ref_split[-1])
+        ref_idx += old_idx
+
+    return f"{ref_split[0]}~{ref_idx}"
+
+class PresentationConfigurations(Base):
+    '''Presentation Configuration class example'''
+
+    __tablename__ = 'presentation_configs'
+
+    id = Column(String(100), primary_key=True, max_length=255)
+    subject_identifier = Column(String(100), max_length=255)
+    configuration = Column(JSON)
+
+    def get_presentation_id(self):
+        '''Fetch presentation config identifier'''
+        return self.id
+
+    def __str__(self):
+        return f"{self.id}"
+
+    def to_json(self):
+        presentation_request = {
+            "name": self.configuration.get("name", ""),
+            "version": self.configuration.get("version", ""),
+            "requested_attributes": {},
+            "requested_predicates": {},
+        }
+
+        for attr in self.configuration.get("requested_attributes", []):
+            label = attr.get("label", str(uuid.uuid4()))
+            if label in presentation_request.get("requested_attributes", {}).keys():
+                label = disambiguate_referent(label)
+            presentation_request["requested_attributes"].update({label: attr})
+
+        for attr in self.configuration.get("requested_predicates", []):
+            label = attr.get("label", str(uuid.uuid4()))
+            if label in presentation_request.get("requested_predicates", {}).keys():
+                label = disambiguate_referent(label)
+
+            presentation_request["requested_predicates"].update({label: attr})
+
+        return {"proof_request": presentation_request}
+
+# class AuthSession(TimeStampedModel):
+class AuthSession(Base):
+    '''AuthSession class example'''
+
+    __tablename__ = 'authsession'
+    ##TODO - make the id column a UUID type
+    id = Column(String(100) ,primary_key=True, default=uuid.uuid4)
+    presentation_record_id = Column(String(100), max_length=255)
+    presentation_request_id = Column(String(100), max_length=255)
+    presentation_request = Column(String)# Column(JSON)
+    presentation_request_satisfied = Column(String)# Column(BOOLEAN)
+    expired_timestamp = Column(String)# Column(DATETIME)
+    request_parameters = Column(String)# Column(JSON)
+    presentation = Column(String) # Column(JSON)
+
+    def __str__(self):
+        return f"{self.presentation_record_id} - {self.presentation_request_id}"
+
+    def satisfy_session(self, presentation):
+        self.presentation_request_satisfied = True
+        self.presentation = presentation
+        self.save()
+
+
+# class MappedUrl(TimeStampedModel):
+class MappedUrl(Base):
+    '''Mapped URL class example'''
+
+    __tablename__ = 'mapped_url'
+    ##TODO - make the id column a UUID type
+    id = Column(String(100), primary_key=True, default=uuid.uuid4 )
+    url = Column(String(100))#models.TextField()
+    # session = models.ForeignKey(
+    #     AuthSession, on_delete=models.CASCADE, blank=True, null=True
+    # )
+    session = Column(Integer, ForeignKey(
+        'user.id', ondelete='CASCADE'
+    ))
+
+    def __str__(self):
+        return f"{self.id}"
+
+    def get_short_url(self):
+        # return f"{settings.SITE_URL}/url/{self.id}"
+        # TODO - fix env/app variables and import from there.
+        return f"https://localhost:5000/url/{self.id}"

@@ -2,18 +2,37 @@
 
 import time
 from authlib.oauth2 import OAuth2Error
-from fastapi import APIRouter, Request, Form, status
-from fastapi.responses import RedirectResponse
+from fastapi import APIRouter, Request, Form, status, HTTPException
+from fastapi.params import Depends
+from fastapi.responses import RedirectResponse, Response, JSONResponse
 from fastapi.templating import Jinja2Templates
 from werkzeug.security import gen_salt
 from src.oauth2 import authorization, require_oauth, generate_user_info
 from src.database import db
 from src.models import User, OAuth2Client
+from src.utils.token import token
+from src.utils.shortener import create_short_url
+from src.endpoints.token import create_id_token
+from src.models import MappedUrl, AuthSession, PresentationConfigurations
+from src.endpoints.authorize import authorization_vc
+# from oidcservice.oauth2.authorization import Authorization
+from oidcservice.oidc.authorization import Authorization
+
+import json
+import logging
+
+#TODO - fix logging configuration for app
+# from .config import Settings, get_setting
+
+LOGGER = logging.getLogger(__name__)
 
 router = APIRouter()
 
 templates = Jinja2Templates(directory='src/templates')
 
+# @router.get('/test')
+# def get_param_list(config: Settings = Depends(get_setting)):
+#     return config
 
 @router.get('/')
 def home(request: Request):
@@ -21,14 +40,13 @@ def home(request: Request):
     clients = db.query(OAuth2Client).all()  # pylint: disable=E1101
     return templates.TemplateResponse('home.html', {'request': request, 'clients': clients})
 
-
-@router.get('/create_client')
+@router.get('/create_client', tags=['OAUTH 2 Client'])
 def get_create_client(request: Request):
     '''Display form to create client'''
     return templates.TemplateResponse('create_client.html', {'request': request})
 
 
-@router.post('/create_client')
+@router.post('/create_client', tags=['OAUTH 2 Client'])
 def post_create_client(  # pylint: disable=R0913
         client_name: str = Form(...),
         client_uri: str = Form(...),
@@ -37,6 +55,7 @@ def post_create_client(  # pylint: disable=R0913
         response_type: str = Form(...),
         scope: str = Form(...),
         token_endpoint_auth_method: str = Form(...)):
+
     '''Create the client information'''
     client_id = gen_salt(24)
     client_id_issued_at = int(time.time())
@@ -67,7 +86,7 @@ def post_create_client(  # pylint: disable=R0913
     return RedirectResponse(url='/', status_code=status.HTTP_303_SEE_OTHER)
 
 
-@router.post('/oauth/authorize')
+@router.post('/oauth/authorize', tags=['OAUTH 2'])
 def authorize(
         request: Request,
         uuid: str = Form(...)):
@@ -91,7 +110,7 @@ def authorize(
     return authorization.create_authorization_response(request=request, grant_user=user)
 
 
-@router.post('/oauth/token')
+@router.post('/oauth/token', tags=['OAUTH 2'])
 def token(
         request: Request,
         grant_type: str = Form(...),
@@ -123,7 +142,7 @@ def token(
     return authorization.create_token_response(request=request)
 
 
-@router.post('/oauth/introspect')
+@router.post('/oauth/introspect', tags=['OAUTH 2'])
 def introspect_token(
         request: Request,
         token: str = Form(...),  # pylint: disable=W0621
@@ -140,7 +159,7 @@ def introspect_token(
     return authorization.create_endpoint_response('introspection', request=request)
 
 
-@router.post('/oauth/revoke')
+@router.post('/oauth/revoke', tags=['OAUTH 2'])
 def revoke_token(
         request: Request,
         token: str = Form(...),  # pylint: disable=W0621
@@ -157,8 +176,299 @@ def revoke_token(
     return authorization.create_endpoint_response('revocation', request=request)
 
 
-@router.get('/oauth/userinfo')
+@router.get('/oauth/userinfo', tags=['OAUTH 2'])
 def userinfo(request: Request):
     '''Request user profile information'''
     with require_oauth.acquire(request, 'profile') as token:  # pylint: disable=W0621
         return generate_user_info(token.user, token.scope)
+
+@router.post('/webhooks', tags=['OIDC'])
+def webhooks(request: Request, topic, response: Response, status_code=200):
+    # TODO: validate 'secret' key
+    message = json.loads(request.body)
+
+    LOGGER.info(f"webhook received - topic: {topic} and message: {message}")
+    # Should be triggered after a proof request has been sent by the org
+    if topic == "present_proof":
+        state = message["state"]
+        if state != "presentation_received":
+            LOGGER.info(f"Presentation Request not yet received, state is [{state}]")
+            return response
+
+        presentation_exchange_id = "- not_set -"
+        try:
+            proof = message["presentation"]["requested_proof"]
+            presentation_exchange_id = message["presentation_exchange_id"]
+
+            LOGGER.info(f"Proof received: {proof}")
+
+            session = AuthSession.objects.get(
+                presentation_request_id=presentation_exchange_id
+            )
+            session.satisfy_session(proof)
+
+        except (AuthSession.DoesNotExist, AuthSession.MultipleObjectsReturned):
+            LOGGER.warning(
+                f"Could not find a corresponding auth session to satisfy. "
+                f"Presentation request id: [{presentation_exchange_id}]"
+            )
+            return response
+
+        except Exception as e:
+            LOGGER.error(f"Wrong 'present_proof' body: {message} - error: {e}")
+            return response
+
+    return response
+
+@router.get('/url', tags=['OIDC'])
+def url_shortener(request: Request, key: str, response: Response, status_code=200):
+    if request.method == "GET":
+        try:
+            mapped_url = MappedUrl.objects.get(id=key)
+            return RedirectResponse(mapped_url.url)
+        except Exception:
+            #TODO - change all exception status codes to be HTTPExceptions with error codes
+            response.status_code = status.HTTP_400_BAD_REQUEST  # ("Wrong key provided")
+            return response
+
+@router.get('/vc/connect/poll', tags=['OIDC'])
+def poll(request: Request, response: Response, status_code=200):
+    presentation_request_id = request.GET.get("pid")
+    if not presentation_request_id:
+        response.status_code = status.HTTP_404_NOT_FOUND
+        return response
+
+    session = get_object_or_404(
+        AuthSession, presentation_request_id=presentation_request_id
+    )
+
+    if not session.presentation_request_satisfied:
+        response.status_code = status.HTTP_400_BAD_REQUEST
+        return response
+
+    return response
+
+@router.post('/vc/connect/callback', tags=['OIDC'])
+def callback(request: Request, response: Response, status_code=200):
+    presentation_request_id = request.GET.get("pid")
+    if not presentation_request_id:
+        response.status_code = status.HTTP_404_NOT_FOUND
+        return response
+
+    session = get_object_or_404(
+        AuthSession, presentation_request_id=presentation_request_id
+    )
+
+    if not session.presentation_request_satisfied:
+        response.status_code = status.HTTP_400_BAD_REQUEST
+        return response
+
+    if session.request_parameters.get("response_type", "") == "code":
+        redirect_uri = session.request_parameters.get("redirect_uri", "")
+        url = f"{redirect_uri}?code={session.pk}"
+        state = session.request_parameters.get("state")
+        if state:
+            url += f"&state={state}"
+        return RedirectResponse(url)
+    response.status_code = status.HTTP_400_BAD_REQUEST
+    return response
+
+@router.get('/vc/connect/token', tags=['OIDC'])
+def token_endpoint(request: Request, response: Response, status_code=200):
+    message = json.loads(request.body)
+    grant_type = message.get("grant_type")
+    if not grant_type or grant_type != "authorization_code":
+        response.status_code = status.HTTP_400_BAD_REQUEST
+        return response
+
+    session_id = message.get("code")
+    if not session_id:
+        response.status_code = status.HTTP_400_BAD_REQUEST
+        return response
+
+    session = get_object_or_404(AuthSession, id=session_id)
+
+    if not session.presentation_request_satisfied:
+        response.status_code = status.HTTP_400_BAD_REQUEST
+        return response
+
+    try:
+        token = create_id_token(session)
+        session.delete()
+    except Exception as e:
+        LOGGER.warning(f"Error creating token for {session_id}: {e}")
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return response
+
+    # Add CorsOrigin with cors_allow_any?
+
+    data = {"access_token": "invalid", "id_token": token, "token_type": "Bearer"}
+    return JSONResponse(data)
+
+@router.get('/vc/connect/authorize', tags=['OIDC'])
+async def authorize(request: Request, response: Response, client_id: str, pres_req_conf_id: str, uuid: str, scope: str, response_type: str, redirect_uri: str, state: str, nonce: str):
+    '''Provide authorization code response'''
+    user = db.query(User).filter(User.uuid == uuid).first()  # pylint: disable=E1101
+
+    if not user:
+        user = User(uuid=uuid)
+        db.add(user)  # pylint: disable=E1101
+        db.commit()  # pylint: disable=E1101
+
+    request.body = {
+        'uuid': uuid
+    }
+
+    # template_name = "qr_display.html"
+
+    pres_req_conf_id = request.query_params.get("pres_req_conf_id")
+    print('Presentation Request ID ', pres_req_conf_id)
+    if not pres_req_conf_id:
+        response.status_code = status.HTTP_400_BAD_REQUEST
+        return response#("pres_req_conf_id query parameter not found")
+
+    # TODO - store this in the db via API and fetch again here
+    presentation_configuration = db.query(PresentationConfigurations).filter(
+        PresentationConfigurations.id == pres_req_conf_id).all()
+    # presentation_configuration = PresentationConfigurations.objects.get(
+    #     id=pres_req_conf_id
+    # )
+    print('Presentation Configuration ', presentation_configuration)
+
+    scopes = request.query_params.get("scope")
+    print('Scopes ',scopes)
+    if not scopes or "vc_authn" not in scopes.split(" "):
+        response.status_code = status.HTTP_400_BAD_REQUEST
+        return response#("Scope vc_authn not found")
+
+    try:
+        print('Request Body ', request.body)
+        print('Request Query Params ', request.query_params)
+        print('Request Headers ', request.headers)
+        authorization.validate_consent_request(request=request, end_user=user)
+        print('CONSENT REQUEST VALIDATED')
+    except OAuth2Error as error:
+        return dict(error.get_body())
+    print('VALIDATION DONE')
+
+    # aut = AuthorizeEndpoint(request)
+    # aut = OAuth2Client.client_uri(request)
+    # aut = AuthorizeEndpoint(request)
+
+    # try:
+    #     aut.validate_params()
+    # except Exception as e:
+    #     response.status_code = status.HTTP_400_BAD_REQUEST
+    #     return response#(f"Error validating parameters: [{e.error}: {e.description}]")
+
+    # TODO - fix session creation in authorization_vc
+    # short_url, session_id, pres_req, b64_presentation = await authorization_vc(pres_req_conf_id, request.query_params.__str__())
+    pres_req, b64_presentation = await authorization_vc(pres_req_conf_id, request.query_params.__str__())
+    print('PRES REQ ', pres_req)
+    print('B64 PRESENTATION ', b64_presentation)
+    # request.session["sessionid"] = session_id
+
+    return authorization.create_authorization_response(request=request, grant_user=user)
+    print('AUTHORISATION RESPONSE')
+
+    return TemplateResponse(
+        request,
+        template_name,
+        {
+            "url": short_url,
+            "b64_presentation": b64_presentation,
+            "poll_interval": settings.POLL_INTERVAL,
+            "poll_max_tries": settings.POLL_MAX_TRIES,
+            "poll_url": f"{settings.SITE_URL}/vc/connect/poll?pid={pres_req}",
+            "resolution_url": f"{settings.SITE_URL}/vc/connect/callback?pid={pres_req}",
+            "pres_req": pres_req,
+        },
+    )
+
+# @router.get('/vc/connect/authorize/')
+# async def authorize(request):
+#     template_name = "qr_display.html"
+#
+#     if request.method == "GET":
+#         pres_req_conf_id = request.GET.get("pres_req_conf_id")
+#         if not pres_req_conf_id:
+#             return HttpResponseBadRequest("pres_req_conf_id query parameter not found")
+#
+#         scopes = request.GET.get("scope")
+#         if not scopes or "vc_authn" not in scopes.split(" "):
+#             return HttpResponseBadRequest("Scope vc_authn not found")
+#
+#         await validatePresentation(request)
+#
+#         # short_url, session_id, pres_req, b64_presentation = await asyncio.gather(authorization_async(pres_req_conf_id, request.GET))
+#         test = await asyncio.gather(authorization_async(pres_req_conf_id, request.GET))
+#
+#         print('TEST:', test[0])
+#         short_url, session_id, pres_req, b64_presentation = test[0]
+#
+#         request = await setSession(request, session_id)
+#         # request.session["sessionid"] = session_id
+#
+#         return TemplateResponse(
+#             request,
+#             template_name,
+#             {
+#                 "url": short_url,
+#                 "b64_presentation": b64_presentation,
+#                 "poll_interval": settings.POLL_INTERVAL,
+#                 "poll_max_tries": settings.POLL_MAX_TRIES,
+#                 "poll_url": f"{settings.SITE_URL}/vc/connect/poll?pid={pres_req}",
+#                 "resolution_url": f"{settings.SITE_URL}/vc/connect/callback?pid={pres_req}",
+#                 "pres_req": pres_req,
+#             },
+#         )
+
+@router.get('/api/vc-configs/', status_code=status.HTTP_200_OK, tags=['Verifiable Credential Presentation Configuration'])
+async def vc_configs(request: Request, response: Response):
+    presentation_configuration = db.query(PresentationConfigurations).all()
+    print('presentation_configuration ', presentation_configuration)
+    return presentation_configuration
+
+@router.post('/api/vc-configs/', tags=['Verifiable Credential Presentation Configuration'])
+async def vc_configs(request: Request, response: Response, id: str = Form(...),
+        subject_identifier: str = Form(...),
+        configuration: str = Form(...)):
+    presentation_config = PresentationConfigurations(id=id, subject_identifier=subject_identifier,
+                                                     configuration=configuration)
+    print('presentation_config ',presentation_config)
+    db.add(presentation_config)
+    db.commit()
+    return presentation_config
+
+@router.put('/api/vc-configs/', tags=['Verifiable Credential Presentation Configuration'])
+# TODO - Fix Update API for Presentation Configurations. Not working at the moment.
+async def vc_configs(request: Request, response: Response, id: str = Form(...),
+        subject_identifier: str = Form(...),
+        configuration: str = Form(...)):
+    presentation_config_record = db.query(PresentationConfigurations).filter(PresentationConfigurations.id == id)
+
+    if not presentation_config_record.first():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail=f"Presentation Config with id {id} not found")
+
+    presentation_config = PresentationConfigurations(id=id, subject_identifier=subject_identifier,
+                                                     configuration=configuration)
+    print('DEBUG ', request.body().__str__(), request.headers, request.query_params)
+    presentation_config_record.update(request)
+    db.commit()
+    return 'updated'
+
+@router.delete('/api/vc-configs/', tags=['Verifiable Credential Presentation Configuration'])
+async def vc_configs(request: Request, response: Response, id: str = Form(...)):
+    presentation_config = db.query(PresentationConfigurations).filter(PresentationConfigurations.id == id)
+
+    if not presentation_config.first():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail=f"Presentation Config with id {id} not found")
+
+    presentation_config.delete(synchronize_session=False)
+    db.commit()
+    return 'done'
+
+
+
