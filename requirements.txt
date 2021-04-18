@@ -10,3 +10,7 @@ werkzeug==1.0.1
 aries-cloudcontroller
 oidcservice
 marshmallow
+qrcode
+lxml
+itsdangerous
+starlette-session
