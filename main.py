@@ -1,6 +1,6 @@
 '''OIDC server example'''
-
-from fastapi import FastAPI
+import requests
+from fastapi import FastAPI, Request, Response
 from fastapi.params import Depends
 from fastapi.responses import JSONResponse
 from mangum import Mangum
@@ -8,10 +8,12 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from src.routes import router
 from src.database import Base, engine
 from src.oauth2 import config_oauth
+from src.database import SessionLocal
 # from fastapi.security import OAuth2AuthorizationCodeBearer, OpenIdConnect
 # from app.core.config import settings
 from pydantic import BaseSettings
 # from . import config
+from starlette.middleware.sessions import SessionMiddleware
 
 # class Settings(BaseSettings):
 #     app_name: str = "Awesome API"
@@ -53,6 +55,7 @@ from pydantic import BaseSettings
 
 app = FastAPI()
 
+app.add_middleware(SessionMiddleware, secret_key="secret", session_cookie="cookie22")
 
 app.config = {
     'SITE_URL': 'http://loccalhost:5000',
