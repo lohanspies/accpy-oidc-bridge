@@ -118,14 +118,15 @@ class AuthSession(Base):
 
     __tablename__ = 'authsession'
     ##TODO - make the id column a UUID type
-    id = Column(String(100) ,primary_key=True, default=uuid.uuid4)
+    # id = Column(String(100) ,primary_key=True, default=uuid.uuid4)
+    id = Column(String, primary_key=True, unique=True, default=uuid.uuid4())
     presentation_record_id = Column(String(100), max_length=255)
     presentation_request_id = Column(String(100), max_length=255)
-    presentation_request = Column(String)# Column(JSON)
-    presentation_request_satisfied = Column(String)# Column(BOOLEAN)
-    expired_timestamp = Column(String)# Column(DATETIME)
-    request_parameters = Column(String)# Column(JSON)
-    presentation = Column(String) # Column(JSON)
+    presentation_request = Column(JSON)
+    presentation_request_satisfied = Column(BOOLEAN)
+    expired_timestamp = Column(DATETIME)
+    request_parameters = Column(JSON)
+    presentation = Column(JSON)
 
     def __str__(self):
         return f"{self.presentation_record_id} - {self.presentation_request_id}"
@@ -142,14 +143,10 @@ class MappedUrl(Base):
 
     __tablename__ = 'mapped_url'
     ##TODO - make the id column a UUID type
-    id = Column(String(100), primary_key=True, default=uuid.uuid4 )
+
+    id = Column(String(100), primary_key=True, default=uuid.uuid4)
     url = Column(String(100))#models.TextField()
-    # session = models.ForeignKey(
-    #     AuthSession, on_delete=models.CASCADE, blank=True, null=True
-    # )
-    session = Column(Integer, ForeignKey(
-        'user.id', ondelete='CASCADE'
-    ))
+    session = Column(Integer, ForeignKey('authsession.id', ondelete='CASCADE'))
 
     def __str__(self):
         return f"{self.id}"
@@ -157,4 +154,4 @@ class MappedUrl(Base):
     def get_short_url(self):
         # return f"{settings.SITE_URL}/url/{self.id}"
         # TODO - fix env/app variables and import from there.
-        return f"https://localhost:5000/url/{self.id}"
+        return f"http://localhost:8000/url/{self.id}"
