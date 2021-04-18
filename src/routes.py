@@ -1,10 +1,12 @@
 '''OIDC server example'''
 
 import time
+
+import requests
 from authlib.oauth2 import OAuth2Error
 from fastapi import APIRouter, Request, Form, status, HTTPException
 from fastapi.params import Depends
-from fastapi.responses import RedirectResponse, Response, JSONResponse
+from fastapi.responses import RedirectResponse, Response, JSONResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from werkzeug.security import gen_salt
 from src.oauth2 import authorization, require_oauth, generate_user_info
@@ -16,7 +18,11 @@ from src.endpoints.token import create_id_token
 from src.models import MappedUrl, AuthSession, PresentationConfigurations
 from src.endpoints.authorize import authorization_vc
 # from oidcservice.oauth2.authorization import Authorization
-from oidcservice.oidc.authorization import Authorization
+# from oidcservice.oidc.authorization import Authorization
+
+import qrcode
+from qrcode.image.svg import SvgImage
+from lxml import etree
 
 import json
 import logging
@@ -183,7 +189,7 @@ def userinfo(request: Request):
         return generate_user_info(token.user, token.scope)
 
 @router.post('/webhooks', tags=['OIDC'])
-def webhooks(request: Request, topic, response: Response, status_code=200):
+def webhooks(request: Request, topic, response: Response):
     # TODO: validate 'secret' key
     message = json.loads(request.body)
 
@@ -220,20 +226,23 @@ def webhooks(request: Request, topic, response: Response, status_code=200):
 
     return response
 
-@router.get('/url', tags=['OIDC'])
-def url_shortener(request: Request, key: str, response: Response, status_code=200):
-    if request.method == "GET":
-        try:
-            mapped_url = MappedUrl.objects.get(id=key)
-            return RedirectResponse(mapped_url.url)
-        except Exception:
-            #TODO - change all exception status codes to be HTTPExceptions with error codes
-            response.status_code = status.HTTP_400_BAD_REQUEST  # ("Wrong key provided")
-            return response
+@router.get('/url/{id}', tags=['OIDC'])
+def url_shortener(request: Request, id: str, response: Response):
+    print('IN URL ENDPOINT WITH VAR ', id)
+    try:
+        mapped_url = db.query(MappedUrl).filter(MappedUrl.id == id).all()
+        print('MAPPED URL ID ', mapped_url[0].id)
+        print('MAPPED URL RETRIEVED ', mapped_url[0].url)
+        print('MAPPED URL SESSION ', mapped_url[0].session)
+        return RedirectResponse(mapped_url[0].url)
+    except Exception:
+        #TODO - change all exception status codes to be HTTPExceptions with error codes
+        response.status_code = status.HTTP_400_BAD_REQUEST  # ("Wrong key provided")
+        return response
 
 @router.get('/vc/connect/poll', tags=['OIDC'])
-def poll(request: Request, response: Response, status_code=200):
-    presentation_request_id = request.GET.get("pid")
+def poll(request: Request, response: Response):
+    presentation_request_id = request.get("pid")
     if not presentation_request_id:
         response.status_code = status.HTTP_404_NOT_FOUND
         return response
@@ -249,7 +258,7 @@ def poll(request: Request, response: Response, status_code=200):
     return response
 
 @router.post('/vc/connect/callback', tags=['OIDC'])
-def callback(request: Request, response: Response, status_code=200):
+def callback(request: Request, response: Response):
     presentation_request_id = request.GET.get("pid")
     if not presentation_request_id:
         response.status_code = status.HTTP_404_NOT_FOUND
@@ -274,7 +283,7 @@ def callback(request: Request, response: Response, status_code=200):
     return response
 
 @router.get('/vc/connect/token', tags=['OIDC'])
-def token_endpoint(request: Request, response: Response, status_code=200):
+def token_endpoint(request: Request, response: Response):
     message = json.loads(request.body)
     grant_type = message.get("grant_type")
     if not grant_type or grant_type != "authorization_code":
@@ -305,7 +314,7 @@ def token_endpoint(request: Request, response: Response, status_code=200):
     data = {"access_token": "invalid", "id_token": token, "token_type": "Bearer"}
     return JSONResponse(data)
 
-@router.get('/vc/connect/authorize', tags=['OIDC'])
+@router.get('/vc/connect/authorize', tags=['OIDC'], response_class=HTMLResponse)
 async def authorize(request: Request, response: Response, client_id: str, pres_req_conf_id: str, uuid: str, scope: str, response_type: str, redirect_uri: str, state: str, nonce: str):
     '''Provide authorization code response'''
     user = db.query(User).filter(User.uuid == uuid).first()  # pylint: disable=E1101
@@ -319,20 +328,15 @@ async def authorize(request: Request, response: Response, client_id: str, pres_r
         'uuid': uuid
     }
 
-    # template_name = "qr_display.html"
-
     pres_req_conf_id = request.query_params.get("pres_req_conf_id")
     print('Presentation Request ID ', pres_req_conf_id)
     if not pres_req_conf_id:
         response.status_code = status.HTTP_400_BAD_REQUEST
         return response#("pres_req_conf_id query parameter not found")
 
-    # TODO - store this in the db via API and fetch again here
     presentation_configuration = db.query(PresentationConfigurations).filter(
         PresentationConfigurations.id == pres_req_conf_id).all()
-    # presentation_configuration = PresentationConfigurations.objects.get(
-    #     id=pres_req_conf_id
-    # )
+
     print('Presentation Configuration ', presentation_configuration)
 
     scopes = request.query_params.get("scope")
@@ -351,77 +355,25 @@ async def authorize(request: Request, response: Response, client_id: str, pres_r
         return dict(error.get_body())
     print('VALIDATION DONE')
 
-    # aut = AuthorizeEndpoint(request)
-    # aut = OAuth2Client.client_uri(request)
-    # aut = AuthorizeEndpoint(request)
-
-    # try:
-    #     aut.validate_params()
-    # except Exception as e:
-    #     response.status_code = status.HTTP_400_BAD_REQUEST
-    #     return response#(f"Error validating parameters: [{e.error}: {e.description}]")
-
-    # TODO - fix session creation in authorization_vc
-    # short_url, session_id, pres_req, b64_presentation = await authorization_vc(pres_req_conf_id, request.query_params.__str__())
-    pres_req, b64_presentation = await authorization_vc(pres_req_conf_id, request.query_params.__str__())
+    short_url, session_id, pres_req, b64_presentation = await authorization_vc(pres_req_conf_id, request.query_params.__str__())
     print('PRES REQ ', pres_req)
     print('B64 PRESENTATION ', b64_presentation)
-    # request.session["sessionid"] = session_id
 
-    return authorization.create_authorization_response(request=request, grant_user=user)
-    print('AUTHORISATION RESPONSE')
+    request.session["sessionid"] = session_id
+    print('SESSION ', request.session["sessionid"])
 
-    return TemplateResponse(
-        request,
-        template_name,
-        {
-            "url": short_url,
-            "b64_presentation": b64_presentation,
-            "poll_interval": settings.POLL_INTERVAL,
-            "poll_max_tries": settings.POLL_MAX_TRIES,
-            "poll_url": f"{settings.SITE_URL}/vc/connect/poll?pid={pres_req}",
-            "resolution_url": f"{settings.SITE_URL}/vc/connect/callback?pid={pres_req}",
-            "pres_req": pres_req,
-        },
-    )
+    result =  authorization.create_authorization_response(request=request, grant_user=user)
+    print('AUTHORISATION RESPONSE', result)
+    # Create QR Code
+    # TODO - remove static variables
+    img_short_url = qrcode.make('http://localhost:8000/url' + pres_req, image_factory=SvgImage)
+    img_base64_url = qrcode.make('http://localhost:8000?m=' + b64_presentation, image_factory=SvgImage)
 
-# @router.get('/vc/connect/authorize/')
-# async def authorize(request):
-#     template_name = "qr_display.html"
-#
-#     if request.method == "GET":
-#         pres_req_conf_id = request.GET.get("pres_req_conf_id")
-#         if not pres_req_conf_id:
-#             return HttpResponseBadRequest("pres_req_conf_id query parameter not found")
-#
-#         scopes = request.GET.get("scope")
-#         if not scopes or "vc_authn" not in scopes.split(" "):
-#             return HttpResponseBadRequest("Scope vc_authn not found")
-#
-#         await validatePresentation(request)
-#
-#         # short_url, session_id, pres_req, b64_presentation = await asyncio.gather(authorization_async(pres_req_conf_id, request.GET))
-#         test = await asyncio.gather(authorization_async(pres_req_conf_id, request.GET))
-#
-#         print('TEST:', test[0])
-#         short_url, session_id, pres_req, b64_presentation = test[0]
-#
-#         request = await setSession(request, session_id)
-#         # request.session["sessionid"] = session_id
-#
-#         return TemplateResponse(
-#             request,
-#             template_name,
-#             {
-#                 "url": short_url,
-#                 "b64_presentation": b64_presentation,
-#                 "poll_interval": settings.POLL_INTERVAL,
-#                 "poll_max_tries": settings.POLL_MAX_TRIES,
-#                 "poll_url": f"{settings.SITE_URL}/vc/connect/poll?pid={pres_req}",
-#                 "resolution_url": f"{settings.SITE_URL}/vc/connect/callback?pid={pres_req}",
-#                 "pres_req": pres_req,
-#             },
-#         )
+    rendered_svg_short_url = etree.tostring(img_short_url.get_image()).decode()
+    rendered_svg_base64_url = etree.tostring(img_base64_url.get_image()).decode()
+
+    # TODO - remove static variables
+    return templates.TemplateResponse('qr_display.html', {'request': request, "b64_presentation": b64_presentation, "poll_interval": 5000, "poll_max_tries": 12, "poll_url": f"http://localhost:8000/vc/connect/poll?pid={pres_req}", "resolution_url": f"ttp://localhost:8000/vc/connect/callback?pid={pres_req}","pres_req": pres_req,"rendered_svg_short_url": rendered_svg_short_url, "rendered_svg_base64_url": rendered_svg_base64_url })
 
 @router.get('/api/vc-configs/', status_code=status.HTTP_200_OK, tags=['Verifiable Credential Presentation Configuration'])
 async def vc_configs(request: Request, response: Response):
