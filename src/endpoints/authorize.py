@@ -7,10 +7,14 @@ from src.models import PresentationConfigurations
 from datetime import datetime, timedelta
 from src.utils.acapy_models import PresentationFactory
 from src.database import db
+import os
 
 # TODO - replace AcaPy args with FastAPI.settings module
-ACA_PY_URL = 'http://0.0.0.0:5678'
-ACA_PY_TRANSPORT_URL = 'http://0.0.0.0:5679'
+
+ACA_PY_URL = 'http://aca-py:5678'
+print('ACAPY_URL ', ACA_PY_URL)
+ACA_PY_TRANSPORT_URL = os.getenv('NGROK_AGENT_URL')#'http://0.0.0.0:5679'
+print('ACAPY_TRANSPORT_URL ', ACA_PY_TRANSPORT_URL)
 
 async def authorization_vc(pres_req_conf_id: str, request_parameters: dict):
     # TODO - replace AcaPy args with FastAPI.settings module
@@ -41,11 +45,12 @@ async def authorization_vc(pres_req_conf_id: str, request_parameters: dict):
     endpoint = await agent_controller.ledger.get_did_endpoint(public_did['result']['did'])
     endpoint = endpoint['endpoint']
     print('ENDPOINT ', endpoint)
+    print('VERKEY ', [public_did['result']['verkey']] )
 
     presentation_request = PresentationFactory.from_params(
         presentation_request=response.get("presentation_request"),
         p_id=response.get("thread_id"),
-        verkey=[public_did.get("verkey")],
+        verkey=[public_did['result']['verkey']],
         endpoint=endpoint,
     ).to_json()
 
@@ -83,5 +88,7 @@ async def authorization_vc(pres_req_conf_id: str, request_parameters: dict):
     short_url = mapped_url.get_short_url()
     print('SHORT_URL ',short_url)
 
+    # Terminate controller
+    await agent_controller.terminate()
 
     return short_url, str(session.id), presentation_request_id, b64_presentation
