@@ -14,7 +14,8 @@ export EXPOSED_DATABASE_SERVICE_PORT=5433
 export DJANGO_SETTINGS_MODULE=oidc_controller.settings.local
 export SECRET_KEY="&(*grsdhgkfds87s8sd88sfasfasflk781asd.xdfjsafudgd"
 
-# oidc-django
+# oidc-fastapi
+export AUTHLIB_INSECURE_TRANSPORT=1
 export APP_SCRIPT="run-prod.sh"
 export DJANGO_DEBUG=${DEBUG}
 #export DATABASE_SERVICE_HOST="database"
@@ -34,7 +35,7 @@ export OIDC_RP_SCOPES="openid profile vc_authn"
 export VC_AUTHN_PRES_REQ_CONF_ID="verified-email"
 
 # Update webhook link below to match ngrok port 5000 URL
-#export SITE_URL=${NGROK_CONTROLLER_URL}
+export SITE_URL=${NGROK_CONTROLLER_URL}
 export DEBUG=True
 
 # aca-py
@@ -162,7 +163,7 @@ start() {
 
     export AUTH_URL="${NGROK_CONTROLLER_URL}/vc/connect/authorize/?pres_req_conf_id=verified-email&scope=openid+profile+vc_authn&response_type=code&client_id=531136&redirect_uri=https%3A%2F%2F${NGROK_CONTROLLER_URL_STRIPPED}%2Foidc%2Fauth%2Fcb%2F&state=O8ALJmGFm5ByvYMyWhT7vkzdc3dc5Yds&nonce="
     docker-compose build
-    docker-compose -p ${COMPOSE_PROJECT_NAME} up -d
+    docker-compose -p ${COMPOSE_PROJECT_NAME} up -d --remove-orphans
     docker-compose logs -f
 }
 stop() {
