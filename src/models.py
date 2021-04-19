@@ -1,5 +1,5 @@
 '''OIDC server example'''
-import datetime
+# import datetime
 import time
 from sqlalchemy import Column, ForeignKey, Integer, String
 from sqlalchemy.orm import relationship
@@ -13,6 +13,7 @@ from src.database import Base, db
 
 
 import uuid
+import os
 
 class User(Base):  # pylint: disable=R0903
     '''User class example'''
@@ -78,8 +79,8 @@ class PresentationConfigurations(Base):
 
     __tablename__ = 'presentation_configs'
 
-    id = Column(String(100), primary_key=True, max_length=255)
-    subject_identifier = Column(String(100), max_length=255)
+    id = Column(String(100), primary_key=True)
+    subject_identifier = Column(String(100))
     configuration = Column(JSON)
 
     def get_presentation_id(self):
@@ -117,11 +118,10 @@ class AuthSession(Base):
     '''AuthSession class example'''
 
     __tablename__ = 'authsession'
-    ##TODO - make the id column a UUID type
-    # id = Column(String(100) ,primary_key=True, default=uuid.uuid4)
+
     id = Column(String, primary_key=True, unique=True, default=uuid.uuid4())
-    presentation_record_id = Column(String(100), max_length=255)
-    presentation_request_id = Column(String(100), max_length=255)
+    presentation_record_id = Column(String(100))
+    presentation_request_id = Column(String(100))
     presentation_request = Column(JSON)
     presentation_request_satisfied = Column(BOOLEAN)
     expired_timestamp = Column(DATETIME)
@@ -142,7 +142,6 @@ class MappedUrl(Base):
     '''Mapped URL class example'''
 
     __tablename__ = 'mapped_url'
-    ##TODO - make the id column a UUID type
 
     id = Column(String(100), primary_key=True, default=uuid.uuid4)
     url = Column(String(100))#models.TextField()
@@ -152,6 +151,7 @@ class MappedUrl(Base):
         return f"{self.id}"
 
     def get_short_url(self):
-        # return f"{settings.SITE_URL}/url/{self.id}"
+        SITE_URL = os.getenv('SITE_URL')
+        return f"{SITE_URL}/url/{self.id}"
         # TODO - fix env/app variables and import from there.
-        return f"http://localhost:8000/url/{self.id}"
+        # return f"http://localhost:8000/url/{self.id}"
