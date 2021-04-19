@@ -5,6 +5,14 @@ This is an example of OpenID Connect 1.0 server in [FastAPI](https://fastapi.tia
 - FastAPI Repo: <https://github.com/tiangolo/fastapi>
 - Authlib Repo: <https://github.com/lepture/authlib>
 
+https://docs.authlib.org/en/stable/flask/2/openid-connect.html
+
+## AcaPy Webhooks
+https://ldej.nl/post/aries-cloudagent-python-webhooks/
+
+## Current Issue
+https://stackoverflow.com/questions/62894952/fastapi-gunicon-uvicorn-access-log-format-customization
+
 # Auth Code Flow
 The flow includes the following steps:
 The client prepares a link to the authorization server and opens the link for user in an user agent (browser). The link includes information that allows the authorization server to identify and respond to the client.
@@ -35,6 +43,8 @@ Create Database and run the development server:
 
 ```bash
 $ uvicorn main:app --host 127.0.0.1 --port 5000 --reload
+$ AUTHLIB_INSECURE_TRANSPORT=1;uvicorn main:app --host 127.0.0.1 --reload
+
 ```
 
 Now, you can open your browser with `http://127.0.0.1:5000/`.
