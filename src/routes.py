@@ -2,18 +2,18 @@
 
 import time
 
-import requests
+# import requests
 from authlib.oauth2 import OAuth2Error
 from fastapi import APIRouter, Request, Form, status, HTTPException
-from fastapi.params import Depends
+# from fastapi.params import Depends
 from fastapi.responses import RedirectResponse, Response, JSONResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from werkzeug.security import gen_salt
 from src.oauth2 import authorization, require_oauth, generate_user_info
 from src.database import db
 from src.models import User, OAuth2Client
-from src.utils.token import token
-from src.utils.shortener import create_short_url
+# from src.utils.token import token
+# from src.utils.shortener import create_short_url
 from src.endpoints.token import create_id_token
 from src.models import MappedUrl, AuthSession, PresentationConfigurations
 from src.endpoints.authorize import authorization_vc
@@ -26,6 +26,10 @@ from lxml import etree
 
 import json
 import logging
+
+import os
+
+SITE_URL = os.getenv('SITE_URL')
 
 #TODO - fix logging configuration for app
 # from .config import Settings, get_setting
@@ -188,42 +192,80 @@ def userinfo(request: Request):
     with require_oauth.acquire(request, 'profile') as token:  # pylint: disable=W0621
         return generate_user_info(token.user, token.scope)
 
-@router.post('/webhooks', tags=['OIDC'])
-def webhooks(request: Request, topic, response: Response):
-    # TODO: validate 'secret' key
-    message = json.loads(request.body)
+@router.post('/webhooks/topic/{topic}', tags=['OIDC'], include_in_schema=False)
+@router.post('/webhooks/topic/{topic}/', tags=['OIDC'])
+async def webhooks(request: Request, response: Response, topic: str):
+    print('WEBHOOK ENDPOINT WITH TOPIC ', topic)
+    print('WEBHOOK REQUEST ', await request.body())
+    message_dict = json.dumps(await request.json())
+    message = json.loads(message_dict)
+
+    print('WEBHOOK MESSAGE ', message)
 
     LOGGER.info(f"webhook received - topic: {topic} and message: {message}")
+    print('WEBHOOK DEBUG1')
     # Should be triggered after a proof request has been sent by the org
     if topic == "present_proof":
         state = message["state"]
+        print('WEBHOOK DEBUG2')
         if state != "presentation_received":
-            LOGGER.info(f"Presentation Request not yet received, state is [{state}]")
-            return response
+            LOGGER.info(f"WEBHOOK - Presentation Request not yet received, state is [{state}]")
+            print('WEBHOOK DEBUG3')
 
+            response.status_code = status.HTTP_200_OK
+            print('WEBHOOK RESPONSE ', response.body, response.status_code)
+            return response
+        print('WEBHOOK DEBUG4')
         presentation_exchange_id = "- not_set -"
         try:
+            print('WEBHOOK DEBUG5')
             proof = message["presentation"]["requested_proof"]
             presentation_exchange_id = message["presentation_exchange_id"]
+            print('WEBHOOK PRESENTATION EXCHANGE ID ', presentation_exchange_id)
 
             LOGGER.info(f"Proof received: {proof}")
+            print('WEBHOOK DEBUG6')
+            # session = AuthSession.objects.get(
+            #     presentation_request_id=presentation_exchange_id
+            # )
+            print('WEBHOOK SESSION A ')
+            session = db.query(AuthSession).filter(AuthSession.presentation_request_id == presentation_exchange_id).all()
 
-            session = AuthSession.objects.get(
-                presentation_request_id=presentation_exchange_id
-            )
-            session.satisfy_session(proof)
+            print('WEBHOOK SESSION B ', session)
+            # TODO - fix the satisfy_session in the DB models
 
-        except (AuthSession.DoesNotExist, AuthSession.MultipleObjectsReturned):
-            LOGGER.warning(
-                f"Could not find a corresponding auth session to satisfy. "
-                f"Presentation request id: [{presentation_exchange_id}]"
-            )
-            return response
+            # session.satisfy_session(proof)
+
+            authsession = AuthSession(presentation_request_id=presentation_exchange_id, presentation_request_satisfied=True,
+                                                             presentation=presentation)
+            print('WEBHOOK SESSION C ', authsession)
+            db.add(authsession)
+            db.commit()
+
+            print('WEBHOOK SESSION C ', authsession)
+        # except (AuthSession.DoesNotExist, AuthSession.MultipleObjectsReturned):
+        # except Exception(KeyError):
+        #     # TODO - enable logging again
+        #     LOGGER.warning(
+        #         f"KEYERROR"
+        #         f"Presentation request id: [{presentation_exchange_id}] and message body is [{message}]"
+        #     )
+        #     return response
 
         except Exception as e:
-            LOGGER.error(f"Wrong 'present_proof' body: {message} - error: {e}")
+            # TODO - enable logging again
+            LOGGER.warning(
+                f"Could not find a corresponding auth session to satisfy. "
+                f"Presentation request id: [{presentation_exchange_id}] with message [{message}]"
+            )
+            response.status_code = status.HTTP_200_OK
             return response
 
+        # except Exception as e:
+        #     # TODO - enable logging again
+        #     # LOGGER.error(f"Wrong 'present_proof' body: {message} - error: {e}")
+        #     return response
+    response.status_code = status.HTTP_200_OK
     return response
 
 @router.get('/url/{id}', tags=['OIDC'])
@@ -236,22 +278,28 @@ def url_shortener(request: Request, id: str, response: Response):
         print('MAPPED URL SESSION ', mapped_url[0].session)
         return RedirectResponse(mapped_url[0].url)
     except Exception:
+        print('URL ENDPOINT RESPONSE ', response.body)
         #TODO - change all exception status codes to be HTTPExceptions with error codes
         response.status_code = status.HTTP_400_BAD_REQUEST  # ("Wrong key provided")
         return response
 
 @router.get('/vc/connect/poll', tags=['OIDC'])
-def poll(request: Request, response: Response):
-    presentation_request_id = request.get("pid")
+def poll(request: Request, response: Response, pid: str):
+    # presentation_request_id = request.get("pid")
+    presentation_request_id = request.query_params.get("pid")
+    print('POLL PRESENTATION REQUEST ', presentation_request_id)
     if not presentation_request_id:
         response.status_code = status.HTTP_404_NOT_FOUND
         return response
 
-    session = get_object_or_404(
-        AuthSession, presentation_request_id=presentation_request_id
-    )
 
-    if not session.presentation_request_satisfied:
+    print('POLL A')
+    session = db.query(AuthSession).filter(AuthSession.presentation_request_id == presentation_request_id).all()
+    # session = get_object_or_404(
+    #     AuthSession, presentation_request_id=presentation_request_id
+    # )
+    print('POLL SESSION ', session)
+    if not session[0].presentation_request_satisfied:
         response.status_code = status.HTTP_400_BAD_REQUEST
         return response
 
@@ -314,7 +362,7 @@ def token_endpoint(request: Request, response: Response):
     data = {"access_token": "invalid", "id_token": token, "token_type": "Bearer"}
     return JSONResponse(data)
 
-@router.get('/vc/connect/authorize', tags=['OIDC'], response_class=HTMLResponse)
+@router.get('/vc/connect/authorize', tags=['OIDC'])
 async def authorize(request: Request, response: Response, client_id: str, pres_req_conf_id: str, uuid: str, scope: str, response_type: str, redirect_uri: str, state: str, nonce: str):
     '''Provide authorization code response'''
     user = db.query(User).filter(User.uuid == uuid).first()  # pylint: disable=E1101
@@ -366,14 +414,15 @@ async def authorize(request: Request, response: Response, client_id: str, pres_r
     print('AUTHORISATION RESPONSE', result)
     # Create QR Code
     # TODO - remove static variables
-    img_short_url = qrcode.make('http://localhost:8000/url' + pres_req, image_factory=SvgImage)
-    img_base64_url = qrcode.make('http://localhost:8000?m=' + b64_presentation, image_factory=SvgImage)
+    # img_short_url = qrcode.make(f'{SITE_URL}/url/' + pres_req, image_factory=SvgImage)
+    img_short_url = qrcode.make(short_url, image_factory=SvgImage)
+    img_base64_url = qrcode.make(f'{SITE_URL}?m=' + b64_presentation, image_factory=SvgImage)
 
     rendered_svg_short_url = etree.tostring(img_short_url.get_image()).decode()
     rendered_svg_base64_url = etree.tostring(img_base64_url.get_image()).decode()
 
     # TODO - remove static variables
-    return templates.TemplateResponse('qr_display.html', {'request': request, "b64_presentation": b64_presentation, "poll_interval": 5000, "poll_max_tries": 12, "poll_url": f"http://localhost:8000/vc/connect/poll?pid={pres_req}", "resolution_url": f"ttp://localhost:8000/vc/connect/callback?pid={pres_req}","pres_req": pres_req,"rendered_svg_short_url": rendered_svg_short_url, "rendered_svg_base64_url": rendered_svg_base64_url })
+    return templates.TemplateResponse('qr_display.html', {'request': request, "b64_presentation": b64_presentation, "poll_interval": 5000, "poll_max_tries": 12, "poll_url": f"{SITE_URL}/vc/connect/poll?pid={pres_req}", "resolution_url": f"{SITE_URL}/vc/connect/callback?pid={pres_req}","pres_req": pres_req,"rendered_svg_short_url": rendered_svg_short_url, "rendered_svg_base64_url": rendered_svg_base64_url })
 
 @router.get('/api/vc-configs/', status_code=status.HTTP_200_OK, tags=['Verifiable Credential Presentation Configuration'])
 async def vc_configs(request: Request, response: Response):
